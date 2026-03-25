@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aviatrix CBR Generator</title>
+  <link rel="icon" type="image/png" href="/static/tab.png" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a2e;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    /* ── Header bar with real logo ── */
+    .header {
+      width: 100%;
+      max-width: 640px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    .header-logo { display: flex; align-items: center; }
+    .header-badge {
+      font-size: .72rem;
+      font-weight: 600;
+      color: #FA6B1E;
+      border: 1px solid #FA6B1E;
+      border-radius: 4px;
+      padding: 2px 7px;
+      margin-left: 14px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 8px 40px rgba(0,0,0,.35);
+      padding: 40px 48px;
+      max-width: 640px;
+      width: 100%;
+    }
+
+    h1 { font-size: 1.45rem; font-weight: 700; color: #111; margin-bottom: 6px; }
+    .subtitle { color: #666; font-size: .9rem; margin-bottom: 28px; line-height: 1.5; }
+
+    /* ── Drop zone ── */
+    #drop-zone {
+      border: 2px dashed #f5c4a8;
+      border-radius: 12px;
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    #drop-zone.over {
+      border-color: #FA6B1E;
+      background: #fff5f0;
+    }
+    #drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-icon { font-size: 2.5rem; margin-bottom: 10px; }
+    .drop-title { font-weight: 600; color: #333; margin-bottom: 4px; }
+    .drop-hint  { font-size: .82rem; color: #999; }
+
+    /* ── File list ── */
+    #file-list {
+      margin-top: 16px;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      background: #fff8f5;
+      border-radius: 8px;
+      font-size: .82rem;
+      color: #333;
+    }
+    .file-item .file-icon { font-size: 1rem; flex-shrink: 0; }
+    .file-item .file-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-item .file-size { color: #999; flex-shrink: 0; }
+    .file-count { font-size: .8rem; color: #888; margin-top: 6px; text-align: right; }
+
+    /* ── Buttons ── */
+    .actions { display: flex; gap: 12px; margin-top: 24px; }
+
+    .btn {
+      flex: 1; padding: 13px 0; border-radius: 10px;
+      font-size: .95rem; font-weight: 600; cursor: pointer; border: none;
+      transition: background .15s, transform .1s;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-primary { background: #FA6B1E; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #e05c12; }
+
+    .btn-secondary {
+      background: #f0f2f5; color: #444; flex: 0 0 auto; padding: 13px 20px;
+    }
+    .btn-secondary:hover:not(:disabled) { background: #e2e5eb; }
+
+    /* ── Status banner ── */
+    #status {
+      display: none;
+      margin-top: 18px;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: .88rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    #status.info    { background: #fff5f0; color: #c04a00; }
+    #status.success { background: #e8f5e9; color: #2e7d32; }
+    #status.error   { background: #fce4e4; color: #b71c1c; }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .note {
+      margin-top: 20px;
+      font-size: .78rem;
+      color: #bbb;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header with real Aviatrix logo -->
+  <div class="header">
+    <div class="header-logo">
+      <!-- Official Aviatrix logo SVG (dark background version) -->
+      <svg width="160" height="25" viewBox="0 0 244 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M48.6333 25.4226L43.5212 18.7906L33.9877 6.63199L31.0862 2.90149C29.7046 1.10534 27.4939 0 25.1451 0C22.7963 0 20.5857 1.10534 19.204 2.90149L16.3025 6.63199L6.76907 18.7906L1.65691 25.4226C-0.968239 28.7385 -0.415584 33.4362 2.9004 36.0613C4.28206 37.1666 5.94004 37.7193 7.59803 37.7193C9.25602 37.7193 12.0194 36.7521 13.5392 34.8178L16.4407 31.0873L24.0398 21.5539L20.033 13.1258L34.2641 31.2255L37.1656 34.956C38.6854 36.8903 40.896 37.8575 43.1067 37.8575C45.3173 37.8575 46.4227 37.3048 47.8043 36.1995C51.1203 33.5743 51.673 28.8767 49.0478 25.5607L48.6333 25.4226Z" fill="#FA6B1E"/>
+        <path d="M174.088 6.35538H151.567C151.152 6.35538 150.738 6.90807 151.014 7.32256L152.258 9.94771C152.258 10.224 152.534 10.3622 152.81 10.3622H161.377V30.8108C161.377 31.2253 161.653 31.5016 162.068 31.5016H165.107C165.522 31.5016 165.798 31.2253 165.798 30.8108V10.3622H174.226C174.641 10.3622 174.917 10.0859 174.917 9.67136V7.04621C174.917 6.63172 174.641 6.35538 174.226 6.35538H174.088Z" fill="#FCF9F3"/>
+        <path d="M80.964 8.42808C80.2732 7.18459 79.0297 6.21742 77.5099 6.21742H76.819C75.2992 6.21742 74.0557 7.04642 73.3649 8.42808L62.8643 30.2583C62.7261 30.6728 62.8643 31.2255 63.417 31.2255H66.733C67.0093 31.2255 67.1474 31.0873 67.2856 30.811L69.7726 25.4225H84.4182L86.9052 30.811C86.9052 31.0873 87.1815 31.2255 87.4578 31.2255H90.7738C91.1883 31.2255 91.6028 30.6728 91.3265 30.2583L80.8258 8.42808H80.964ZM71.5688 21.8302L76.4046 11.3296C76.6809 10.6387 77.6481 10.6387 77.9244 11.3296L82.7602 21.8302H71.4306H71.5688Z" fill="#FCF9F3"/>
+        <path d="M114.4 6.35539H111.223C110.946 6.35539 110.808 6.49358 110.67 6.76991L101.827 25.6986C101.551 26.3894 100.584 26.3894 100.308 25.6986L91.4649 6.76991C91.4649 6.49358 91.1886 6.35539 90.9122 6.35539H87.5963C87.1818 6.35539 86.7672 6.90807 87.0436 7.32257L97.5442 29.1528C98.235 30.3963 99.4785 31.2252 100.998 31.2252H101.137C102.518 31.2252 103.9 30.3963 104.591 29.1528L115.091 7.32257C115.229 6.90807 115.091 6.35539 114.539 6.35539H114.4Z" fill="#FCF9F3"/>
+        <path d="M122.828 6.35538H119.788C119.407 6.35538 119.098 6.66468 119.098 7.04621V30.5344C119.098 30.916 119.407 31.2252 119.788 31.2252H122.828C123.21 31.2252 123.519 30.916 123.519 30.5344V7.04621C123.519 6.66468 123.21 6.35538 122.828 6.35538Z" fill="#FCF9F3"/>
+        <path d="M144.935 8.42804C144.244 7.18454 143 6.21737 141.481 6.21737H140.79C139.27 6.21737 138.026 7.04638 137.336 8.42804L126.835 30.2583C126.697 30.6728 126.835 31.2254 127.388 31.2254H130.704C130.98 31.2254 131.118 31.0873 131.256 30.8109L133.743 25.4225H148.389L150.876 30.8109C150.876 31.0873 151.152 31.2254 151.429 31.2254H154.744C155.159 31.2254 155.574 30.6728 155.297 30.2583L144.797 8.42804H144.935ZM135.539 21.8301L140.375 11.3295C140.652 10.6387 141.619 10.6387 141.895 11.3295L146.731 21.8301H135.401H135.539Z" fill="#FCF9F3"/>
+        <path d="M198.82 17.6852C199.511 16.5798 199.925 15.3363 199.925 13.8165C199.925 12.2967 199.511 11.0532 198.82 9.80969C198.129 8.70437 197.024 7.87538 195.78 7.18455C194.398 6.49372 192.879 6.21737 191.221 6.21737H179.615C179.2 6.21737 178.924 6.4937 178.924 6.9082V30.5346C178.924 30.9491 179.2 31.2254 179.615 31.2254H182.654C183.069 31.2254 183.345 30.9491 183.345 30.5346V21.2775H187.076L195.227 30.9491C195.227 31.0873 195.504 31.2254 195.78 31.2254H199.372C199.925 31.2254 200.201 30.5346 199.925 30.1201L192.326 21.1393C193.708 21.1393 194.951 20.7248 196.056 20.3103C197.438 19.6195 198.405 18.7905 199.096 17.6852H198.82ZM194.122 16.5798C193.293 17.2706 192.05 17.547 190.668 17.547H183.207V10.086H190.668C192.188 10.086 193.293 10.3623 194.122 11.0532C194.951 11.744 195.366 12.573 195.366 13.8165C195.366 15.06 194.951 15.889 194.122 16.5798Z" fill="#FCF9F3"/>
+        <path d="M209.044 6.35539H206.004C205.623 6.35539 205.313 6.66468 205.313 7.04622V30.5344C205.313 30.916 205.623 31.2252 206.004 31.2252H209.044C209.426 31.2252 209.735 30.916 209.735 30.5344V7.04622C209.735 6.66468 209.426 6.35539 209.044 6.35539Z" fill="#FCF9F3"/>
+        <path d="M229.493 18.7905L238.474 7.32277C238.75 6.90828 238.474 6.21742 237.921 6.21742H234.329C234.19 6.21742 233.914 6.21744 233.776 6.49377L226.729 15.3364L219.683 6.49377C219.683 6.35561 219.269 6.21742 219.13 6.21742H215.538C214.985 6.21742 214.709 6.90828 214.985 7.32277L223.966 18.7905L214.985 30.2583C214.709 30.6728 214.985 31.3636 215.538 31.3636H219.13C219.269 31.3636 219.545 31.3636 219.683 31.0873L226.729 22.2447L233.776 31.0873C233.776 31.2254 234.19 31.3636 234.329 31.3636H237.921C238.474 31.3636 238.75 30.6728 238.474 30.2583L229.493 18.7905Z" fill="#FCF9F3"/>
+      </svg>
+      <span class="header-badge">CBR Generator</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h1>Generate Customer Business Review Presentation</h1>
+    <p class="subtitle">
+      Drop your Omni export files below — either a single <strong>Excel workbook</strong>
+      (.xlsx) or multiple <strong>CSV files</strong>. The presentation will be built
+      and downloaded automatically. No data is stored on the server.
+    </p>
+
+    <!-- Drop zone -->
+    <div id="drop-zone">
+      <input type="file" id="file-input" accept=".csv,.xlsx,.xls,.xlsm" multiple />
+      <div class="drop-icon">📂</div>
+      <div class="drop-title">Drag &amp; drop files here</div>
+      <div class="drop-hint">Excel workbook (.xlsx) &nbsp;or&nbsp; individual CSV files</div>
+    </div>
+
+    <!-- File list -->
+    <div id="file-list"></div>
+    <div id="file-count" class="file-count" style="display:none"></div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button class="btn btn-primary" id="generate-btn" disabled>
+        Generate Presentation
+      </button>
+      <button class="btn btn-secondary" id="clear-btn" disabled>Clear</button>
+    </div>
+
+    <!-- Status -->
+    <div id="status"></div>
+  </div>
+
+  <p class="note">
+    Files are processed in an isolated temporary environment and discarded immediately.
+  </p>
+
+  <script>
+    const dropZone    = document.getElementById('drop-zone');
+    const fileInput   = document.getElementById('file-input');
+    const fileList    = document.getElementById('file-list');
+    const fileCount   = document.getElementById('file-count');
+    const generateBtn = document.getElementById('generate-btn');
+    const clearBtn    = document.getElementById('clear-btn');
+    const status      = document.getElementById('status');
+
+    // Each entry: { name, size, type, isExcel, data: ArrayBuffer }
+    let selectedFiles = [];
+
+    function readFileAsBuffer(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = e => resolve(e.target.result);
+        reader.onerror = ()  => reject(new Error(`Cannot read ${file.name}`));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    // ── Drag-and-drop events ──────────────────────────────────────
+    dropZone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropZone.classList.add('over');
+    });
+    ['dragleave', 'dragend'].forEach(ev =>
+      dropZone.addEventListener(ev, () => dropZone.classList.remove('over'))
+    );
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('over');
+      addFiles([...e.dataTransfer.files]);
+    });
+    fileInput.addEventListener('change', () => {
+      addFiles([...fileInput.files]);
+      fileInput.value = '';
+    });
+
+    const VALID_EXTS = ['.csv', '.xlsx', '.xls', '.xlsm'];
+    function isValid(f) { return VALID_EXTS.some(e => f.name.toLowerCase().endsWith(e)); }
+    function isExcel(f) { return ['.xlsx', '.xls', '.xlsm'].some(e => f.name.toLowerCase().endsWith(e)); }
+
+    async function addFiles(files) {
+      const valid   = files.filter(isValid);
+      const invalid = files.filter(f => !isValid(f));
+      if (invalid.length) {
+        showStatus(`Unsupported file type ignored: ${invalid.map(f=>f.name).join(', ')}`, 'info');
+      }
+      const existing = new Set(selectedFiles.map(f => f.name));
+      for (const f of valid) {
+        if (existing.has(f.name)) continue;
+        try {
+          const data = await readFileAsBuffer(f);
+          selectedFiles.push({ name: f.name, size: f.size, type: f.type, isExcel: isExcel(f), data });
+        } catch (e) {
+          // FileReader blocked (macOS sandbox on drag-and-drop) — keep raw File, XHR sends it natively
+          selectedFiles.push({ name: f.name, size: f.size, type: f.type, isExcel: isExcel(f), file: f });
+        }
+      }
+      renderFileList();
+    }
+
+    function formatBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+      return (n/1048576).toFixed(1) + ' MB';
+    }
+
+    function renderFileList() {
+      fileList.innerHTML = '';
+      if (selectedFiles.length === 0) {
+        fileList.style.display = 'none';
+        fileCount.style.display = 'none';
+        generateBtn.disabled = true;
+        clearBtn.disabled = true;
+        return;
+      }
+      fileList.style.display = 'flex';
+      fileCount.style.display = 'block';
+      fileCount.textContent = `${selectedFiles.length} file${selectedFiles.length > 1 ? 's' : ''} selected`;
+      generateBtn.disabled = false;
+      clearBtn.disabled = false;
+
+      selectedFiles.forEach(f => {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        const icon = f.isExcel ? '📊' : '📄';
+        item.innerHTML = `
+          <span class="file-icon">${icon}</span>
+          <span class="file-name" title="${f.name}">${f.name}</span>
+          <span class="file-size">${formatBytes(f.size)}</span>
+        `;
+        fileList.appendChild(item);
+      });
+    }
+
+    // ── Clear ─────────────────────────────────────────────────────
+    clearBtn.addEventListener('click', () => {
+      selectedFiles = [];
+      renderFileList();
+      hideStatus();
+    });
+
+    // ── Generate ──────────────────────────────────────────────────
+    generateBtn.addEventListener('click', () => {
+      if (selectedFiles.length === 0) return;
+
+      generateBtn.disabled = true;
+      clearBtn.disabled = true;
+      generateBtn.innerHTML = '<span class="spinner"></span> Generating…';
+      showStatus('Building your presentation, please wait…', 'info');
+
+      const fd = new FormData();
+      selectedFiles.forEach(f => {
+        if (f.data) {
+          fd.append('csvfiles', new Blob([f.data], { type: f.type || 'application/octet-stream' }), f.name);
+        } else {
+          fd.append('csvfiles', f.file, f.name);
+        }
+      });
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/generate', true);
+      xhr.responseType = 'blob';
+
+      xhr.onload = function () {
+        if (xhr.status === 200) {
+          const cd       = xhr.getResponseHeader('Content-Disposition') || '';
+          const match    = cd.match(/filename="?([^"]+)"?/);
+          const filename = match ? match[1] : 'CBR.pptx';
+
+          const url = URL.createObjectURL(xhr.response);
+          const a   = document.createElement('a');
+          a.href = url; a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+
+          showStatus(`✓ "${filename}" downloaded successfully.`, 'success');
+        } else {
+          const reader = new FileReader();
+          reader.onload = function () {
+            try {
+              const json   = JSON.parse(reader.result);
+              const detail = json.detail ? `\n\n${json.detail}` : '';
+              showStatus(`Error: ${json.error}${detail}`, 'error');
+            } catch {
+              showStatus(`Error: ${xhr.statusText || xhr.status}`, 'error');
+            }
+          };
+          reader.readAsText(xhr.response);
+        }
+        generateBtn.innerHTML = 'Generate Presentation';
+        generateBtn.disabled  = selectedFiles.length === 0;
+        clearBtn.disabled     = selectedFiles.length === 0;
+      };
+
+      xhr.onerror = function () {
+        showStatus('Network error: request failed. Please try again.', 'error');
+        generateBtn.innerHTML = 'Generate Presentation';
+        generateBtn.disabled  = selectedFiles.length === 0;
+        clearBtn.disabled     = selectedFiles.length === 0;
+      };
+
+      xhr.send(fd);
+    });
+
+    function showStatus(msg, type) {
+      status.textContent = msg;
+      status.className = type;
+      status.style.display = 'block';
+    }
+    function hideStatus() {
+      status.style.display = 'none';
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Exclude everything not needed in the Docker image
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+*.md
+csv/
+*.pptx
+!template/CBR Template.pptx
+*.jpg
+image*.png
+# exclude loose PNGs but keep static assets
+*.png
+!static/*.png
