@@ -19,11 +19,13 @@ import io
 import logging
 import os
 import tempfile
-import traceback
+import threading
 from datetime import date
+
 from pathlib import Path
 
 from flask import Flask, render_template, request, send_file, jsonify
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from data_loader import CustomerData, extract_excel_to_dir
 from generate_cbr import build_presentation
@@ -42,13 +44,17 @@ TEMPLATE_BLOB   = os.environ.get("TEMPLATE_BLOB",   "CBR Template.pptx")
 LOCAL_TEMPLATE  = Path(__file__).parent / "template" / "CBR Template.pptx"
 
 _template_bytes: bytes | None = None
+_template_lock = threading.Lock()
 
 
 def _load_template() -> bytes:
-    """Return the template PPTX as bytes (GCS or local file)."""
+    """Return the template PPTX as bytes (GCS or local file). Thread-safe."""
     global _template_bytes
     if _template_bytes is not None:
         return _template_bytes
+    with _template_lock:
+        if _template_bytes is not None:   # re-check after acquiring lock
+            return _template_bytes
 
     if TEMPLATE_BUCKET:
         log.info("Downloading template from GCS: gs://%s/%s", TEMPLATE_BUCKET, TEMPLATE_BLOB)
@@ -77,6 +83,19 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 
+@app.errorhandler(RequestEntityTooLarge)
+def too_large(_e):
+    return jsonify({"error": f"File too large. Maximum upload size is {MAX_UPLOAD_MB} MB."}), 413
+
+
+def _safe_filename(raw: str) -> str:
+    """Strip directory components and reject empty or hidden names."""
+    name = Path(raw).name  # drops any directory prefix including Windows drive letters
+    if not name or name.startswith("."):
+        raise ValueError(f"Invalid filename: {raw!r}")
+    return name
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
@@ -84,8 +103,8 @@ def index():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    uploaded = request.files.getlist("csvfiles")
-    if not uploaded or all(f.filename == "" for f in uploaded):
+    uploaded = [f for f in request.files.getlist("csvfiles") if f.filename]
+    if not uploaded:
         return jsonify({"error": "No files received."}), 400
 
     # Classify uploads: one Excel workbook OR one-or-more CSV files
@@ -109,7 +128,11 @@ def generate():
         if excel_files:
             # ── Extract sheets from Excel workbook into CSVs ─────────
             xlsx_file = excel_files[0]
-            xlsx_path = tmp / Path(xlsx_file.filename).name
+            try:
+                safe_name = _safe_filename(xlsx_file.filename)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            xlsx_path = tmp / safe_name
             xlsx_path.write_bytes(xlsx_file.read())
             try:
                 extract_excel_to_dir(xlsx_path, tmp)
@@ -121,7 +144,13 @@ def generate():
         else:
             # ── Save individual CSV files ────────────────────────────
             for f in csv_files:
-                dest = tmp / Path(f.filename).name
+                try:
+                    name = _safe_filename(f.filename)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+                dest = tmp / name
+                if dest.exists():
+                    return jsonify({"error": f"Duplicate filename: {name}"}), 400
                 dest.write_bytes(f.read())
             log.info("Saved %d CSV files to %s", len(csv_files), tmp)
 
@@ -140,6 +169,9 @@ def generate():
             return jsonify({"error": f"Could not load template: {exc}"}), 500
 
         # ── Generate PPTX ────────────────────────────────────────────
+        # Capture name before the with block exits
+        customer_safe = data.customer_name.replace(" ", "_").replace("/", "-")
+
         try:
             out_path = tmp / "output.pptx"
             build_presentation(
@@ -150,15 +182,11 @@ def generate():
             pptx_bytes = out_path.read_bytes()
         except Exception as exc:
             log.exception("Presentation generation failed")
-            return jsonify({
-                "error": f"Generation failed: {exc}",
-                "detail": traceback.format_exc(),
-            }), 500
+            return jsonify({"error": f"Generation failed: {exc}"}), 500
 
     # ── Temp dir deleted — stream from memory ────────────────────────
-    today     = date.today().strftime("%Y-%m-%d")
-    safe_name = data.customer_name.replace(" ", "_").replace("/", "-")
-    filename  = f"CBR - {safe_name} - {today}.pptx"
+    today    = date.today().strftime("%Y-%m-%d")
+    filename = f"CBR - {customer_safe} - {today}.pptx"
     mime      = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
     log.info("Streaming %s (%d bytes)", filename, len(pptx_bytes))

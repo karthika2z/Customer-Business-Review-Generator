@@ -16,8 +16,8 @@ New template slide layout (0-indexed, 22 slides):
   5  Business Value               ← text only
   6  Support Requests             ← 4 tiles + 1 requestor table
   7  Software Upgrades            ← 2 tiles + 1 lifecycle table
-  8  Aviatrix Use Cases           ← features + use cases table image
-  9  Feature Requests             ← feature request counts (separate slide)
+  8  Aviatrix Use Cases           ← native PPTX tables (editable)
+  9  Feature Requests             ← counts text + detail table image
  10  Strategic Engagements        ← text only
  11  ZTMM Alignment               ← manual (banner) + keep Picture 10
  12  Client Success Score         ← text scores; keep OLE Object 1
@@ -27,14 +27,20 @@ New template slide layout (0-indexed, 22 slides):
  16-21  Rubric appendix
 """
 import argparse
+import logging
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+log = logging.getLogger(__name__)
 
 import pandas as pd
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
 
 from data_loader import CustomerData
 import chart_builder as cb
@@ -73,6 +79,8 @@ def delete_slide(prs: Presentation, index: int):
             break
     if rId:
         prs.part.drop_rel(rId)
+    else:
+        log.warning("delete_slide: could not find relationship for slide index %d", index)
     del xml_slides[index]
 
 
@@ -99,6 +107,8 @@ def _set_tf_content(tf, header: str, bullets: list):
     The first bullet becomes paragraph 0; remaining bullets are appended.
     """
     tf.word_wrap = True
+    if not tf.paragraphs:
+        return  # degenerate empty text frame — nothing to populate
     for p in tf.paragraphs[1:]:
         p._p.getparent().remove(p._p)
     p0 = tf.paragraphs[0]
@@ -304,7 +314,8 @@ def update_slide3_consumption(slide, data: CustomerData,
                 insights.append("Firenet usage declined in transit layer")
     if data.copilot_deployed == 0:
         insights.append("Copilot not deployed — enable for visibility & control")
-    pct = round(data.consumption_pct * 100, 1)
+    pct_raw = data.consumption_pct
+    pct = round(pct_raw if pct_raw > 1 else pct_raw * 100, 1)
     if pct > 0:
         insights.append(f"Utilization: {pct}% of contracted capacity")
     if not insights:
@@ -444,68 +455,143 @@ def update_slide7_software_upgrades(slide, data: CustomerData,
     add_image_inches(slide, lifecycle_img, LEFT, y, rl_w, rl_h)
 
 
-def update_slide8_usecases(slide, data: CustomerData, uc_img: Path):
+def update_slide8_usecases(slide, data: CustomerData):
     """
     Slide 9 (index 8) – Aviatrix Use Cases.
-    Places the features+use-cases table image in the full content area.
-    Feature Requests are on their own slide (index 9).
+    Builds two native PPTX tables (Features Enabled + Use Cases) so the
+    content remains editable after generation.
     """
-    LEFT = 0.529
-    TOP  = 1.685
-    W    = 12.2   # full content width (no Feature Requests column on this slide)
-    H    = _h(W, cb.UC_FW, cb.UC_FH)
-    add_image_inches(slide, uc_img, LEFT, TOP, W, H)
+    _NAVY   = RGBColor(0x1E, 0x2D, 0x3D)
+    _WHITE  = RGBColor(0xFF, 0xFF, 0xFF)
+    _LBLUE  = RGBColor(0xD6, 0xE8, 0xF7)   # light blue
+    _GREEN  = RGBColor(0x27, 0xAE, 0x60)
+    _RED    = RGBColor(0xE7, 0x4C, 0x3C)
+    _ROW_BG = [_WHITE, _LBLUE]
+
+    features = [
+        ("Copilot Enabled",            data.copilot_enabled_label == "Y"),
+        ("DCF Enabled",                data.dcf_enabled == "Y"),
+        ("Firenet Enabled",            data.firenet_enabled == "Y"),
+        ("CloudN / Edge Enabled",      data.cloudn_edge == "Y"),
+        ("Multi-Region Transit",       data.multi_region == "Y"),
+    ]
+    use_cases = [
+        ("Unified Cloud NW Fabric",    data.uc_unified_nw == "Y"),
+        ("Prevent Lateral Movement",   data.uc_lateral == "Y"),
+        ("Zero Trust NW Segmentation", data.uc_zt_seg == "Y"),
+        ("Secure 3rd Party Access",    data.uc_3rd_party == "Y"),
+        ("End-to-End Encryption",      data.uc_e2e_enc == "Y"),
+        ("Block Data Exfiltration",    data.uc_block_exfil == "Y"),
+        ("Secure Dev Velocity",        data.uc_dev_velocity == "Y"),
+    ]
+
+    LEFT      = 0.529
+    TOP       = 1.685
+    GAP       = 0.3
+    TOTAL_W   = 12.2
+    TBL_W     = (TOTAL_W - GAP) / 2   # ~5.95"
+    STATUS_W  = 0.65
+    NAME_W    = TBL_W - STATUS_W
+    HEIGHT    = 5.2
+
+    def _style_cell(cell, text, *, bold=False, size=14, fg=None, bg=None,
+                    align=PP_ALIGN.LEFT):
+        tf = cell.text_frame
+        tf.word_wrap = False
+        para = tf.paragraphs[0]
+        para.alignment = align
+        # Remove existing runs and set fresh text
+        for r in para.runs:
+            r._r.getparent().remove(r._r)
+        run = para.add_run()
+        run.text = text
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        if fg:
+            run.font.color.rgb = fg
+        if bg:
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = bg
+
+    def _add_panel(items, title, left_in):
+        n_rows = 1 + len(items)
+        gf  = slide.shapes.add_table(
+            n_rows, 2,
+            Inches(left_in), Inches(TOP),
+            Inches(TBL_W), Inches(HEIGHT),
+        )
+        tbl = gf.table
+        tbl.columns[0].width = Inches(STATUS_W)
+        tbl.columns[1].width = Inches(NAME_W)
+
+        # Header: merge both cells, navy background
+        hdr = tbl.cell(0, 0)
+        hdr.merge(tbl.cell(0, 1))
+        _style_cell(hdr, title, bold=True, size=16,
+                    fg=_WHITE, bg=_NAVY, align=PP_ALIGN.CENTER)
+
+        # Data rows
+        for i, (name, active) in enumerate(items):
+            bg  = _ROW_BG[i % 2]
+            sym = "✓" if active else "✗"
+            col = _GREEN if active else _RED
+            _style_cell(tbl.cell(i + 1, 0), sym, bold=True, size=16,
+                        fg=col, bg=bg, align=PP_ALIGN.CENTER)
+            _style_cell(tbl.cell(i + 1, 1), name, fg=_NAVY, bg=bg)
+
+    _add_panel(features,  "Features Enabled", LEFT)
+    _add_panel(use_cases, "Use Cases",         LEFT + TBL_W + GAP)
 
 
-def update_slide9_feature_requests(slide, data: CustomerData):
+def update_slide9_feature_requests(slide, data: CustomerData,
+                                   fr_tbl_img: Optional[Path]):
     """
     Slide 10 (index 9) – Feature Requests.
-    Populates 'Text Placeholder 8' (the Feature Requests label/content box)
-    with feature request counts. That is the only editable text box on this slide.
-    Template: l=0.529" t=1.157" w=3.638" h=0.773", text='Feature Requests'
+    Populates the counts text placeholder and embeds a table image with
+    the full feature request details (Key, Summary, Issue Type, Status).
     """
-    # Target 'Text Placeholder 8' directly — it is both label and content area
+    # ── Counts text placeholder ──────────────────────────────────────────── #
     content_shape = find_shape(slide, "Text Placeholder 8")
-
     if content_shape is None:
-        # Fall back: any shape containing "Feature" or "Request"
         for sh in slide.shapes:
             if sh.has_text_frame and ("Feature" in sh.text_frame.text or
                                       "Request" in sh.text_frame.text):
                 content_shape = sh
                 break
 
-    if content_shape is None or not content_shape.has_text_frame:
-        print("  ⚠  Could not find Feature Requests placeholder on slide 9")
-        return
+    if content_shape is not None and content_shape.has_text_frame:
+        tf = content_shape.text_frame
+        tf.word_wrap = True
+        for p in tf.paragraphs[1:]:
+            p._p.getparent().remove(p._p)
+        p0 = tf.paragraphs[0]
+        if data.has_feature_requests:
+            lines = [
+                f"Total: {data.fr_total_count}   "
+                f"Completed: {data.fr_completed_count}   "
+                f"Outstanding: {data.fr_outstanding_count}",
+            ]
+        else:
+            lines = ["No feature requests on record."]
+        if p0.runs:
+            p0.runs[0].text = lines[0]
+            for r in p0.runs[1:]:
+                r.text = ""
+        else:
+            p0.add_run().text = lines[0]
+        for line in lines[1:]:
+            np_ = tf.add_paragraph()
+            np_.add_run().text = line
+    else:
+        log.warning("Could not find Feature Requests placeholder on slide 9")
 
-    tf = content_shape.text_frame
-    tf.word_wrap = True
-
-    # Clear all paragraphs after the first
-    for p in tf.paragraphs[1:]:
-        p._p.getparent().remove(p._p)
-
-    p0 = tf.paragraphs[0]
+    # ── Feature requests detail table image ──────────────────────────────── #
     if data.has_feature_requests:
-        lines = [
-            f"Total:       {data.fr_total_count}",
-            f"Completed:   {data.fr_completed_count}",
-            f"Outstanding: {data.fr_outstanding_count}",
-        ]
-    else:
-        lines = ["No feature requests on record."]
-
-    if p0.runs:
-        p0.runs[0].text = lines[0]
-        for r in p0.runs[1:]:
-            r.text = ""
-    else:
-        p0.add_run().text = lines[0]
-
-    for line in lines[1:]:
-        np_ = tf.add_paragraph()
-        np_.add_run().text = line
+        LEFT = 0.529
+        TOP  = 2.05
+        W    = 12.2
+        H    = _h(W, cb.FR_FW, cb.FR_FH)
+        add_image_inches(slide, fr_tbl_img, LEFT, TOP, W, H)
 
 
 def update_slide10_strategic(slide, data: CustomerData):
@@ -579,7 +665,7 @@ def update_slide12_score(slide, data: CustomerData):
         # Fall back: find any notes-like box below the title area
         ph = _find_notes_shape(slide, keywords=["notes"])
     if ph is None or not ph.has_text_frame:
-        print("  ⚠  Could not find score text placeholder on slide 12")
+        log.warning("Could not find score text placeholder on slide 12")
         return
 
     tf = ph.text_frame
@@ -684,8 +770,11 @@ def build_presentation(data: CustomerData, template_path, output_path: str):
         # ── Slide 3: Product Consumption ──────────────────────────────── #
         pivot_mrr, pivot_usage = data.get_consumption_chart_data()
 
+        # Normalise: CSVs may store this as a ratio (0.875) or already as % (87.5)
+        _pct_raw = data.consumption_pct
+        _pct_display = round(_pct_raw if _pct_raw > 1 else _pct_raw * 100, 1)
         s3_util  = cb.metric_tile(
-            f"{round(data.consumption_pct * 100, 1)}%",
+            f"{_pct_display}%",
             "Consumption Utilization",
             tmp / "s3_util.png",
         )
@@ -721,8 +810,11 @@ def build_presentation(data: CustomerData, template_path, output_path: str):
                                  "Total Gateways",           tmp / "s7_t2.png")
         s7_tbl = cb.release_lifecycle_table(data,            tmp / "s7_tbl.png")
 
-        # ── Slide 8: Aviatrix Use Cases ───────────────────────────────── #
-        s8_uc = cb.use_cases_image(data, tmp / "s8_uc.png")
+        # Slide 8 (Use Cases) uses native PPTX tables — no image needed
+
+        # ── Slide 9: Feature Requests ─────────────────────────────────── #
+        s9_fr = (cb.feature_requests_table(data.df_feature_requests, tmp / "s9_fr.png")
+                 if data.has_feature_requests else None)
 
         # ── Manual slide images ───────────────────────────────────────── #
         manual_full   = cb.manual_slide_placeholder(tmp / "manual_full.png",  short=False)
@@ -730,12 +822,21 @@ def build_presentation(data: CustomerData, template_path, output_path: str):
 
         # ── Build presentation ────────────────────────────────────────── #
         print("Building presentation …")
-        # template_path may be a path string/Path or a bytes/BytesIO object
+        # template_path may be a path string/Path, bytes, or BytesIO object
         import io as _io
         if isinstance(template_path, (bytes, bytearray)):
             prs = Presentation(_io.BytesIO(template_path))
+        elif isinstance(template_path, _io.IOBase):
+            prs = Presentation(template_path)
         else:
             prs = Presentation(str(template_path))
+
+        n_slides = len(prs.slides)
+        if n_slides < 16:
+            raise ValueError(
+                f"Template has only {n_slides} slide(s); expected at least 16. "
+                "Ensure you are using the correct CBR Template.pptx."
+            )
         slides = prs.slides
 
         update_slide0_title(slides[0], data, date_str)
@@ -752,8 +853,8 @@ def build_presentation(data: CustomerData, template_path, output_path: str):
                                    s6_t1, s6_t2, s6_t3, s6_t4, s6_req)
         update_slide7_software_upgrades(slides[7], data,
                                          s7_t1, s7_t2, s7_tbl)
-        update_slide8_usecases(slides[8], data, s8_uc)           # Use Cases
-        update_slide9_feature_requests(slides[9], data)           # Feature Requests (NEW)
+        update_slide8_usecases(slides[8], data)                   # Use Cases
+        update_slide9_feature_requests(slides[9], data, s9_fr)    # Feature Requests
         update_slide10_strategic(slides[10], data)
 
         _mark_manual(slides[11], data, manual_banner, short=True)  # ZTMM (Picture 10 preserved)
@@ -818,22 +919,26 @@ def main():
     )
     args = parser.parse_args()
 
-    output = args.output
-    if not output:
-        try:
-            d    = CustomerData(Path(args.data_dir))
-            safe = d.customer_name.replace(" ", "_").replace("/", "-")
-        except Exception:
-            safe = "Customer"
-        slug   = datetime.today().strftime("%Y-%m-%d")
-        output = f"CBR - {safe} - {slug}.pptx"
-
     try:
-        generate_cbr(
-            data_dir=args.data_dir,
-            template_path=args.template,
-            output_path=output,
-        )
+        data_dir      = Path(args.data_dir)
+        template_path = Path(args.template)
+        if not data_dir.exists():
+            raise FileNotFoundError(f"Data directory not found: {data_dir}")
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template not found: {template_path}")
+
+        data = CustomerData(data_dir)
+        log.info("Customer: %s  ARR: $%,.0f  Scores: %s",
+                 data.customer_name, data.arr, data.scores)
+
+        if args.output:
+            output = args.output
+        else:
+            safe   = data.customer_name.replace(" ", "_").replace("/", "-")
+            slug   = datetime.today().strftime("%Y-%m-%d")
+            output = f"CBR - {safe} - {slug}.pptx"
+
+        build_presentation(data, template_path, output)
     except FileNotFoundError as e:
         print(f"ERROR: {e}")
         sys.exit(1)

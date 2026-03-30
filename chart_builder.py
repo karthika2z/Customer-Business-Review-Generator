@@ -13,8 +13,10 @@ Design principles:
 import textwrap
 from pathlib import Path
 
+import pandas as pd
 import matplotlib
-matplotlib.use("Agg")
+if matplotlib.get_backend().lower() != "agg":
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
@@ -39,6 +41,7 @@ SPEND_FW,   SPEND_FH   = 10,   3.0    # monthly spend chart
 CTRL_FW,    CTRL_FH    = 9,    3.5    # controller table
 REQ_FW,     REQ_FH     = 9,    3.5    # ticket requestor table
 REL_FW,     REL_FH     = 12,   4.5    # release lifecycle table
+FR_FW,      FR_FH      = 12,   4.5    # feature requests table
 MANUAL_FW,  MANUAL_FH  = 11,   3.5    # manual-slide placeholder (full)
 BANNER_FW,  BANNER_FH  = 11,   1.5    # manual-slide placeholder (banner/short)
 
@@ -97,8 +100,10 @@ def metric_tile(value: str, label: str, out_path: Path) -> Path:
     ax.text(TILE_FW / 2, TILE_FH * 0.18, wrapped,
             ha="center", va="center", fontsize=_TILE_LABEL, color=DGRAY)
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -112,7 +117,12 @@ def stacked_parameter_chart(pivot_mrr, pivot_usage, out_path: Path) -> Path:
     """
     params  = list(pivot_mrr.columns)
     months  = pivot_mrr.index
-    mlabels = [m.strftime("%b '%y") for m in months]
+    mlabels = []
+    for m in months:
+        try:
+            mlabels.append(pd.Timestamp(m).strftime("%b '%y"))
+        except (ValueError, AttributeError):
+            mlabels.append("?")
     colors  = [PARAM_COLORS.get(p, DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
                for i, p in enumerate(params)]
 
@@ -127,6 +137,8 @@ def stacked_parameter_chart(pivot_mrr, pivot_usage, out_path: Path) -> Path:
             if val < 300:
                 continue
             usage_val = pivot_usage[param].iloc[j] if param in pivot_usage.columns else 0
+            if pd.isna(usage_val):
+                usage_val = 0
             ax.text(bar.get_x() + bar.get_width() / 2,
                     bottoms[j] + val / 2,
                     str(int(round(usage_val))),
@@ -152,8 +164,10 @@ def stacked_parameter_chart(pivot_mrr, pivot_usage, out_path: Path) -> Path:
     # Reserve a fixed 25% right margin for the legend so the chart area is
     # always the same width regardless of how long the legend labels are.
     fig.subplots_adjust(left=0.09, right=0.75, bottom=0.13, top=0.93)
-    fig.savefig(out_path, dpi=160, facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -169,37 +183,57 @@ def monthly_spend_chart(monthly_spend_df, out_path: Path) -> Path:
     fig, ax = plt.subplots(figsize=(SPEND_FW, SPEND_FH), facecolor=WHITE)
     ax.set_facecolor("#F7F8FA")
 
+    _spend_ok = False
     if monthly_spend_df is not None and not monthly_spend_df.empty:
-        df = monthly_spend_df.copy()
-        df["Account Name"] = df["Account Name"].astype(str)
-        df = df[df["Account Name"].str.strip().str.lower() != "nan"]
-        df = df[df["Account Name"].str.strip() != ""].copy()
-        df["Date Month"] = pd.to_datetime(df["Date Month"], errors="coerce")
-        df = df.dropna(subset=["Date Month"])
-        df = df.sort_values("Date Month")
+        _required = {"Date Month", "Monthly Spend", "Monthly Usage"}
+        if not _required.issubset(monthly_spend_df.columns):
+            ax.text(0.5, 0.5, "Monthly spend data format not recognised",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=_LABEL, color=DGRAY, style="italic")
+            ax.axis("off")
+        else:
+            df = monthly_spend_df.copy()
+            if "Account Name" in df.columns:
+                df["Account Name"] = df["Account Name"].astype(str)
+                df = df[df["Account Name"].str.strip().str.lower() != "nan"]
+                df = df[df["Account Name"].str.strip() != ""].copy()
+            df["Date Month"] = pd.to_datetime(df["Date Month"], errors="coerce")
+            df = df.dropna(subset=["Date Month"])
+            df = df.sort_values("Date Month")
+            try:
+                spend_vals = df["Monthly Spend"].values.astype(float)
+                usage_vals = df["Monthly Usage"].values.astype(float)
+            except (ValueError, TypeError):
+                ax.text(0.5, 0.5, "Non-numeric values in monthly spend data",
+                        ha="center", va="center", transform=ax.transAxes,
+                        fontsize=_LABEL, color=DGRAY, style="italic")
+                ax.axis("off")
+            else:
+                _spend_ok = True
+                sp_labels = []
+                for m in df["Date Month"].values:
+                    try:
+                        sp_labels.append(pd.Timestamp(m).strftime("%b '%y"))
+                    except (ValueError, AttributeError):
+                        sp_labels.append("?")
 
-        sp_labels  = [pd.Timestamp(m).strftime("%b '%y")
-                      for m in df["Date Month"].values]
-        spend_vals = df["Monthly Spend"].values.astype(float)
-        usage_vals = df["Monthly Usage"].values.astype(float)
+                bw = 0.38
+                xs = np.arange(len(df))
+                ax.bar(xs - bw / 2, spend_vals, bw, color="#1565C0", label="Monthly Spend ($)")
+                ax.bar(xs + bw / 2, usage_vals, bw, color=ORANGE,    label="Monthly Usage ($)")
+                ax.set_xticks(xs)
+                ax.set_xticklabels(sp_labels, rotation=0, fontsize=_TICK)
+                ax.set_ylabel("Amount ($)", fontsize=_LABEL, color=DGRAY)
+                ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"${v:,.0f}"))
+                ax.tick_params(axis="y", labelsize=_TICK)
+                ax.grid(axis="y", linestyle="--", alpha=0.35)
+                ax.spines[["top", "right"]].set_visible(False)
+                ax.set_title("Monthly Spend vs Usage", loc="left",
+                             fontsize=_TITLE, fontweight="bold", color=NAVY, pad=5)
+                ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1),
+                          fontsize=_TICK, frameon=False)
 
-        bw = 0.38
-        xs = np.arange(len(df))
-        ax.bar(xs - bw / 2, spend_vals, bw, color="#1565C0", label="Monthly Spend ($)")
-        ax.bar(xs + bw / 2, usage_vals, bw, color=ORANGE,    label="Monthly Usage ($)")
-
-        ax.set_xticks(xs)
-        ax.set_xticklabels(sp_labels, rotation=0, fontsize=_TICK)
-        ax.set_ylabel("Amount ($)", fontsize=_LABEL, color=DGRAY)
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-        ax.tick_params(axis="y", labelsize=_TICK)
-        ax.grid(axis="y", linestyle="--", alpha=0.35)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.set_title("Monthly Spend vs Usage", loc="left",
-                     fontsize=_TITLE, fontweight="bold", color=NAVY, pad=5)
-        ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1),
-                  fontsize=_TICK, frameon=False)
-    else:
+    if not _spend_ok and (monthly_spend_df is None or monthly_spend_df.empty):
         ax.text(0.5, 0.5, "No monthly spend data available",
                 ha="center", va="center", transform=ax.transAxes,
                 fontsize=_LABEL, color=DGRAY, style="italic")
@@ -207,8 +241,10 @@ def monthly_spend_chart(monthly_spend_df, out_path: Path) -> Path:
 
     # Same fixed-margin approach as stacked chart — keeps chart area constant.
     fig.subplots_adjust(left=0.09, right=0.75, bottom=0.13, top=0.93)
-    fig.savefig(out_path, dpi=160, facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -274,8 +310,10 @@ def controller_table_image(data, out_path: Path) -> Path:
         ax.text(CTRL_FW / 2, hdr_y - 0.6, "No controller data available",
                 ha="center", fontsize=_LABEL, color=DGRAY, style="italic")
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -297,20 +335,32 @@ def ticket_requestor_table(df_requestor, out_path: Path) -> Path:
     ax.text(0.15, REQ_FH - 0.18, "Tickets by Requestor",
             fontsize=_TITLE, fontweight="bold", color=NAVY)
 
-    if df_requestor is None or df_requestor.empty:
+    if df_requestor is None or df_requestor.empty or len(df_requestor.columns) == 0:
         ax.text(REQ_FW / 2, REQ_FH / 2, "No requestor data available",
                 ha="center", va="center", fontsize=_LABEL,
                 color=DGRAY, style="italic")
-        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-        plt.close(fig)
+        try:
+            fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+        finally:
+            plt.close(fig)
         return out_path
 
-    # Detect name and count columns
+    # Detect name and count columns (ensure they are distinct)
     cols = list(df_requestor.columns)
     name_col  = next((c for c in cols if any(k in c.lower()
                       for k in ("name", "requestor", "user", "submitter"))), cols[0])
-    count_col = next((c for c in cols if any(k in c.lower()
-                      for k in ("count", "ticket", "total", "number", "qty"))), cols[-1])
+    count_col = next((c for c in cols if c != name_col and any(k in c.lower()
+                      for k in ("count", "ticket", "total", "number", "qty"))),
+                     next((c for c in cols if c != name_col), None))
+    if count_col is None:
+        ax.text(REQ_FW / 2, REQ_FH / 2, "Insufficient columns in requestor data",
+                ha="center", va="center", fontsize=_LABEL,
+                color=DGRAY, style="italic")
+        try:
+            fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+        finally:
+            plt.close(fig)
+        return out_path
 
     col_headers = ["#", "Requestor", "Tickets"]
     col_x = [0.15, 0.60, 7.80]
@@ -351,8 +401,10 @@ def ticket_requestor_table(df_requestor, out_path: Path) -> Path:
         ax.axhline(ry - 0.06, xmin=0.015, xmax=0.99,
                    color="#DDDDDD", linewidth=0.5)
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -391,8 +443,12 @@ def release_lifecycle_table(data, out_path: Path) -> Path:
     rows = []
     df = data.df_release_lifecycle
     if not df.empty:
-        df_s = (df.sort_values("Adoption Date", ascending=False)
-                if "Adoption Date" in df.columns else df)
+        if "Adoption Date" in df.columns:
+            df = df.copy()
+            df["_sort_date"] = pd.to_datetime(df["Adoption Date"], errors="coerce")
+            df_s = df.sort_values("_sort_date", ascending=False)
+        else:
+            df_s = df
         for _, r in df_s.head(8).iterrows():
             rows.append([str(r.get(k, "")) for k in col_keys])
 
@@ -418,8 +474,108 @@ def release_lifecycle_table(data, out_path: Path) -> Path:
                 "No release lifecycle data available",
                 ha="center", fontsize=_LABEL, color=DGRAY, style="italic")
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
+    return out_path
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# FEATURE REQUESTS TABLE                       figsize = (FR_FW, FR_FH)
+# ────────────────────────────────────────────────────────────────────────────
+def feature_requests_table(df_fr, out_path: Path) -> Path:
+    """
+    Table of feature requests showing Key, Summary, Issue Type, and Status.
+    Figure size: (12 × 4.5) inches.
+    """
+    fig = plt.figure(figsize=(FR_FW, FR_FH), facecolor=WHITE)
+    ax  = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, FR_FW)
+    ax.set_ylim(0, FR_FH)
+    ax.axis("off")
+
+    ax.text(0.15, FR_FH - 0.18, "Feature Requests",
+            fontsize=_TITLE, fontweight="bold", color=NAVY)
+
+    if df_fr is None or df_fr.empty:
+        ax.text(FR_FW / 2, FR_FH / 2, "No feature requests on record.",
+                ha="center", va="center", fontsize=_LABEL,
+                color=DGRAY, style="italic")
+        try:
+            fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+        finally:
+            plt.close(fig)
+        return out_path
+
+    # Detect columns (case-insensitive)
+    cols_lower = {c.lower(): c for c in df_fr.columns}
+    key_col    = cols_lower.get("key",         next((v for k, v in cols_lower.items() if "key"     in k), df_fr.columns[0]))
+    sum_col    = cols_lower.get("summary",     next((v for k, v in cols_lower.items() if "summary" in k), None))
+    type_col   = cols_lower.get("issue type",  next((v for k, v in cols_lower.items() if "type"    in k), None))
+    status_col = cols_lower.get("status name", next((v for k, v in cols_lower.items() if "status"  in k), None))
+
+    show_cols   = [c for c in [key_col, sum_col, type_col, status_col] if c is not None]
+    col_headers = []
+    col_x       = []
+    col_w       = []
+
+    # Layout: Key(1.4), Summary(fills), Issue Type(2.0), Status(2.0)
+    x = 0.15
+    layout = []
+    if key_col    in show_cols: layout.append((key_col,    "Key",        1.35))
+    if sum_col    in show_cols: layout.append((sum_col,    "Summary",    6.10))
+    if type_col   in show_cols: layout.append((type_col,   "Issue Type", 2.10))
+    if status_col in show_cols: layout.append((status_col, "Status",     2.10))
+
+    for data_col, header, w in layout:
+        col_headers.append(header)
+        col_x.append(x)
+        col_w.append(w)
+        x += w
+
+    hdr_y = FR_FH - 0.55
+    for cx, cw, hdr in zip(col_x, col_w, col_headers):
+        ax.add_patch(plt.Rectangle(
+            (cx, hdr_y - 0.04), cw - 0.05, 0.32, color=MGRAY, zorder=0
+        ))
+        ax.text(cx + 0.06, hdr_y + 0.10, hdr,
+                fontsize=_TH, color=DGRAY, va="center", fontweight="bold")
+
+    data_cols = [item[0] for item in layout]
+    rows_df = df_fr[data_cols].dropna(how="all").head(8)
+
+    if rows_df.empty:
+        ax.text(FR_FW / 2, FR_FH / 2, "No feature requests on record.",
+                ha="center", va="center", fontsize=_LABEL,
+                color=DGRAY, style="italic")
+        try:
+            fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+        finally:
+            plt.close(fig)
+        return out_path
+
+    row_h = 0.46
+    for ri, (_, row) in enumerate(rows_df.iterrows()):
+        ry = hdr_y - row_h * (ri + 1)
+        bg = WHITE if ri % 2 == 0 else "#F9F9F9"
+        ax.add_patch(plt.Rectangle(
+            (0.10, ry - 0.06), FR_FW - 0.20, row_h - 0.02, color=bg, zorder=0
+        ))
+        for cx, cw, data_col, header in zip(col_x, col_w, data_cols, col_headers):
+            cell_val = str(row[data_col]) if pd.notna(row[data_col]) else ""
+            max_chars = int(cw * 8)  # rough chars-per-inch estimate
+            if len(cell_val) > max_chars:
+                cell_val = cell_val[:max_chars - 1] + "…"
+            ax.text(cx + 0.06, ry + 0.13, cell_val,
+                    fontsize=_TC, color=NAVY, va="center")
+        ax.axhline(ry - 0.06, xmin=0.01, xmax=0.99,
+                   color="#DDDDDD", linewidth=0.5)
+
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -506,8 +662,10 @@ def use_cases_image(data, out_path: Path) -> Path:
     _panel(features,  "Features Enabled", pad,                 pad, panel_w, panel_h)
     _panel(use_cases, "Use Case",         pad + panel_w + gap, pad, panel_w, panel_h)
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=PANEL_BG)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=PANEL_BG)
+    finally:
+        plt.close(fig)
     return out_path
 
 
@@ -557,6 +715,8 @@ def manual_slide_placeholder(out_path: Path, short: bool = False) -> Path:
                 ha="center", va="center",
                 fontsize=28, fontweight="bold", color=RED)
 
-    fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor=WHITE)
+    finally:
+        plt.close(fig)
     return out_path

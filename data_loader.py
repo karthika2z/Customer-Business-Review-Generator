@@ -4,8 +4,11 @@ Reads all CSVs for a customer and exposes structured properties.
 Also provides extract_excel_to_dir() to convert an Excel workbook
 (one sheet per dataset) into a directory of CSVs.
 """
+import logging
 import pandas as pd
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 # Excel truncates sheet names to 31 characters; map those back to the full CSV filenames.
@@ -53,7 +56,8 @@ class CustomerData:
         if path.exists():
             try:
                 return pd.read_csv(path)
-            except Exception:
+            except Exception as exc:
+                log.warning("Failed to parse %s: %s", filename, exc)
                 return pd.DataFrame()
         return pd.DataFrame()
 
@@ -73,11 +77,17 @@ class CustomerData:
             return default
 
     def _get_valid(self, df, col, default=0):
-        """Return the first non-NaN value in col, scanning all rows."""
+        """Return the first non-NaN numeric value in col, scanning all rows."""
         if df.empty or col not in df.columns:
             return default
         vals = df[col].dropna()
-        return float(vals.iloc[0]) if len(vals) else default
+        if not len(vals):
+            return default
+        try:
+            return float(vals.iloc[0])
+        except (ValueError, TypeError):
+            log.warning("_get_valid: non-numeric value in column %r: %r", col, vals.iloc[0])
+            return default
 
     def _uc_flag(self, df, flag_col, usage_col=None):
         """Return 'Y'/'N' for a use case field.
@@ -134,7 +144,10 @@ class CustomerData:
 
         # Account basics
         self.customer_name  = self._get(a, "Name", "Customer")
-        self.arr            = float(self._get(a, "ARR (current mrr)", 0))
+        try:
+            self.arr = float(self._get(a, "ARR (current mrr)", 0))
+        except (ValueError, TypeError):
+            self.arr = 0.0
         self.account_owner  = self._get(a, "Account Owner Name C", "")
         self.ciso_name      = self._get(a, "Ciso Name", "")
         self.next_renewal   = str(self._get(a, "Next Renewal Date", ""))
@@ -212,8 +225,8 @@ class CustomerData:
         self.active_ace_certs = self._int(self.df_ace_certs, "Total")
         last = self.df_last_ace
         if not last.empty and "Date Certified Max" in last.columns:
-            dates = last["Date Certified Max"].dropna()
-            self.last_ace_date = str(dates.max()) if len(dates) else ""
+            dates = pd.to_datetime(last["Date Certified Max"], errors="coerce").dropna()
+            self.last_ace_date = str(dates.max().date()) if len(dates) else ""
         else:
             self.last_ace_date = ""
         self.next_ace_expiry = str(self._get(self.df_next_ace, "Min Expiration Date per User", ""))
@@ -322,12 +335,23 @@ class CustomerData:
     # ------------------------------------------------------------------ #
     def get_consumption_chart_data(self):
         """Return (pivot_mrr, pivot_usage) DataFrames indexed by month."""
+        _empty = (pd.DataFrame(), pd.DataFrame())
+        if self.df_consumption.empty:
+            return _empty
+        required = {"Date Month", "Parameters", "Consumption MRR"}
+        if not required.issubset(self.df_consumption.columns):
+            log.warning("get_consumption_chart_data: missing columns %s",
+                        required - set(self.df_consumption.columns))
+            return _empty
         df = self.df_consumption.copy()
-        df["Account Name"] = df["Account Name"].astype(str)
-        df = df[df["Account Name"].str.strip().str.lower() != "nan"]
-        df = df[df["Account Name"].str.strip() != ""]
+        if "Account Name" in df.columns:
+            df["Account Name"] = df["Account Name"].astype(str)
+            df = df[df["Account Name"].str.strip().str.lower() != "nan"]
+            df = df[df["Account Name"].str.strip() != ""]
         df["Date Month"] = pd.to_datetime(df["Date Month"], errors="coerce")
         df = df.dropna(subset=["Date Month"])
+        if df.empty:
+            return _empty
         df = df.sort_values("Date Month")
 
         # Excel exports "Usage" as NaN and puts data in "Usage Sum" instead.
@@ -357,7 +381,10 @@ class CustomerData:
         wanted = ["Zendesk Created At Date", "Ticket ID", "Subject", "Product", "Status", "Resolution"]
         rows = []
         for _, row in df.iterrows():
-            rows.append({c: str(row.get(c, "")) for c in wanted if c in df.columns})
+            rows.append({
+                c: ("" if pd.isna(v := row.get(c, "")) else str(v))
+                for c in wanted if c in df.columns
+            })
         return rows
 
     def get_use_cases(self):
